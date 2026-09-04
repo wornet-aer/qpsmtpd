@@ -31,6 +31,13 @@ are shown below in ["Plugin settings"](#plugin-settings).
     the _Received: _header, ...
     Default is whatever Sys::Hostname's hostname() returns.
 
+- me-auth-results
+
+    Sets the ID string used in Authentication-Results: header (useful
+    for multi-server clusters). If this is set to "none", no
+    Authentication-Results: header will be added or modifed.
+    Default is the same as me above.
+
 - plugin\_dirs
 
     Where to search for plugins (one directory per line), defaults to `./plugins`.
@@ -76,7 +83,31 @@ are shown below in ["Plugin settings"](#plugin-settings).
 - timeoutsmtpd
 
     Set the timeout for the clients, `timeoutsmtpd` is the qmail smtpd control
-    file, `timeout` the qpsmtpd file. Default is 1200 seconds.
+    file, `timeout` the qpsmtpd file. Default is 1200 seconds. Note that this
+    bounds client I/O, not the time a plugin may spend in a hook; see
+    `hook_timeout`.
+
+- hook_timeout
+
+    Maximum seconds any single plugin may spend in a hook before it is aborted
+    and skipped (logged as `PLUGIN TIMEOUT`). Guards against a plugin that calls
+    slow third-party software (SpamAssassin, virus scanners) and stalls the
+    whole connection. `0` (the default) disables the limit. A plugin that
+    manages its own `alarm` will override this while it runs.
+
+    The limit applies to the main connection hooks (`connect`, `mail`, `rcpt`,
+    `data`, `data_post`, `queue`, and the like). The auxiliary hooks run outside
+    the normal dispatch — `config`, `user_config`, `logging`, `ok`, and `deny` —
+    are not bounded.
+
+- plugin\_timeouts
+
+    Per-plugin overrides of `hook_timeout`, one plugin per line as
+    `plugin_name seconds` (or `plugin_name:seconds`); lines beginning with `#`
+    are ignored. A plugin not listed here uses `hook_timeout`.
+
+        spamassassin 30
+        virus/clamav 20
 
 - tls\_before\_auth
 

@@ -26,8 +26,65 @@ __helo_respond('ehlo_respond');
 __data_respond('data_respond');
 __clean_authentication_results();
 __authentication_results();
+__queue_liveness();
+__hook_timeout();
 
 done_testing();
+
+sub __queue_liveness {
+    # client still connected: queue proceeds to the queue hooks
+    my ($smtpd) = Test::Qpsmtpd->new_conn();
+    $smtpd->transaction->sender(Qpsmtpd::Address->new('sender@example.com'));
+    $smtpd->transaction->add_recipient(Qpsmtpd::Address->new('r@example.com'));
+    my $ran = 0;
+    $smtpd->mock_hook('queue', sub { $ran = 1; return DONE });
+    $smtpd->queue($smtpd->transaction);
+    ok( $ran, "queue hooks run when the client is still connected" );
+    $smtpd->unmock_hook('queue');
+
+    # client gone before queue: discard without running queue hooks
+    ($smtpd) = Test::Qpsmtpd->new_conn();
+    $smtpd->transaction->sender(Qpsmtpd::Address->new('sender@example.com'));
+    $smtpd->transaction->add_recipient(Qpsmtpd::Address->new('r@example.com'));
+    $ran = 0;
+    $smtpd->mock_hook('queue', sub { $ran = 1; return DONE });
+    $smtpd->{_response} = undef;
+    no warnings 'redefine';
+    local *Test::Qpsmtpd::check_socket = sub { 0 };
+    $smtpd->queue($smtpd->transaction);
+    ok( !$ran, "queue hooks skipped when client disconnected before queue" );
+    is( $smtpd->{_response}, undef, "no response sent to a disconnected client" );
+    ok( !$smtpd->transaction->sender, "transaction discarded when client is gone" );
+    $smtpd->unmock_hook('queue');
+}
+
+sub __hook_timeout {
+    my ($smtpd) = Test::Qpsmtpd->new_conn();
+
+    # config parsing: per-plugin override, comments, and global fallback
+    no warnings 'redefine';
+    local *Test::Qpsmtpd::config = sub {
+        my ($self, $key) = @_;
+        return (5)                                if $key eq 'hook_timeout';
+        return ('# comment', 'slow 2', 'other:9') if $key eq 'plugin_timeouts';
+        return;
+    };
+    delete $smtpd->{$_} for qw( _hook_timeouts _hook_timeout_default );
+    is( $smtpd->hook_timeout('slow'),  2, "per-plugin timeout (space form)" );
+    is( $smtpd->hook_timeout('other'), 9, "per-plugin timeout (colon form)" );
+    is( $smtpd->hook_timeout('unlisted'), 5, "falls back to global hook_timeout" );
+
+    # a hook that overruns its timeout is aborted rather than blocking forever
+    $smtpd->{_hook_timeouts} = {};
+    $smtpd->{_hook_timeout_default} = 1;
+    my $finished = 0;
+    $smtpd->mock_hook('slow_test_hook', sub { sleep 4; $finished = 1; return DECLINED });
+    my $start = time;
+    $smtpd->run_hooks('slow_test_hook');
+    ok( time - $start < 4, "slow hook aborted by hook_timeout" );
+    ok( !$finished, "hook did not run to completion after timeout" );
+    $smtpd->unmock_hook('slow_test_hook');
+}
 
 sub __new {
     isa_ok( $smtp, 'Qpsmtpd::SMTP' );
@@ -155,12 +212,40 @@ sub __data_respond {
         'data_respond(DECLINED) response - no recips' );
     $smtpd->transaction->add_recipient(Qpsmtpd::Address->new('recip@example.com'));
 
-    # data_respond also runs the data_post hooks, so this will require a bit
-    # more work to get under test. we also don't yet have a way to mock
-    # message data; that will probably require overriding getline()
-    #$smtpd->mock_data( _test_message() );
-    #$smtpd->mock_hook( data_post => sub { return DECLINED } );
-    #is( $smtpd->data_respond(DECLINED), 1, 'data_respond, DECLINED' );
+    __data_respond_barelf();
+}
+
+sub __data_respond_barelf {
+    # A well-formed message must not be rejected as bare-LF; a bare LF/CR on
+    # any line must be.
+    my $drive = sub {
+        my @lines = @_;
+        ( $smtpd ) = Test::Qpsmtpd->new_conn();
+        $smtpd->transaction->sender(Qpsmtpd::Address->new('sender@example.com'));
+        $smtpd->transaction->add_recipient(Qpsmtpd::Address->new('recip@example.com'));
+        $smtpd->connection->notes( disconnected => 0 );
+        $smtpd->mock_data( [@lines] );
+
+        # Neutralize the data_* hooks so the barelf check in the DATA loop is
+        # exercised in isolation from the configured plugins.
+        no warnings 'redefine';
+        local *Qpsmtpd::run_hooks = sub { return (DECLINED, '') };
+        $smtpd->data_respond(DECLINED);
+        return ($smtpd->response)[0];
+    };
+
+    my $code = $drive->("From: a\@example.com\r\n", "Date: now\r\n", "\r\n", "body\r\n", ".\r\n");
+    isnt( $code, 421, 'well-formed message is not rejected as bare-LF' );
+    isnt( $smtpd->connection->notes('disconnected'), 1,
+        'well-formed message does not disconnect' );
+
+    $code = $drive->("From: a\@example.com\r\n", "bare\n", ".\r\n");
+    is( $code, 421, 'bare LF in body is rejected' );
+    is( $smtpd->connection->notes('disconnected'), 1, 'bare LF in body disconnects' );
+
+    $code = $drive->("From: a\@example.com\r\n", "\r\n", "body\r\n", ".\n");
+    is( $code, 421, 'bare LF terminator is rejected' );
+    is( $smtpd->connection->notes('disconnected'), 1, 'bare LF terminator disconnects' );
 }
 
 sub __clean_authentication_results {
@@ -226,10 +311,26 @@ sub __authentication_results {
     ok($ar =~ /auth=pass/, "added A-R header with auth: $ar");
 
     delete $smtpd->{_auth};
-    $smtpd->connection->notes('authentication_results', 'spf=pass smtp.mailfrom=ietf.org' );
+    $smtpd->connection->notes('authentication_results', 'iprev=pass' );
     $smtpd->authentication_results();
     $ar = $smtpd->transaction->header->get('Authentication-Results'); chomp $ar;
-    ok($ar =~ /spf/, "added A-R header with SPF: $ar");
+    ok($ar =~ /iprev/, "added A-R header with connection results: $ar");
+
+    $smtpd->transaction->notes('authentication_results', 'spf=pass smtp.mailfrom=ietf.org' );
+    $smtpd->authentication_results();
+    $ar = $smtpd->transaction->header->get('Authentication-Results'); chomp $ar;
+    ok($ar =~ /iprev/ && $ar =~ /spf/, "A-R header collates connection + transaction: $ar");
+
+    # #322 regression: a second message on the same connection must not inherit
+    # the first transaction's auth results, but must keep connection results.
+    $smtpd->reset_transaction;
+    $smtpd->transaction->header(
+        Mail::Header->new(Modify => 0, MailFrom => 'COERCE')
+    );
+    $smtpd->authentication_results();
+    $ar = $smtpd->transaction->header->get('Authentication-Results'); chomp $ar;
+    ok($ar =~ /iprev/, "connection results persist to next transaction: $ar");
+    ok($ar !~ /spf/, "transaction results do not leak to next transaction: $ar");
 
 }
 

@@ -31,7 +31,7 @@ sub new {
 
     my $self = bless({args => \%args}, $class);
 
-   # this list of valid commands should probably be a method or a set of methods
+    # this list of valid commands should probably be a method or a set of methods
     $self->{_commands} =
       {map { $_ => '' } qw(ehlo helo rset mail rcpt data help vrfy noop quit)};
 
@@ -681,20 +681,18 @@ sub data_respond {
 
     my $timeout = $self->config('timeout');
     while (defined($_ = $self->getline($timeout))) {
+
+        if ($_ !~ /\r\n$/) {
+            $self->respond(421, 'See http://smtpd.develooper.com/barelf.html');
+            $self->disconnect;
+            return 1;
+        }
+
         if ($_ eq ".\r\n") {
             $complete++;
             $_ = '';
         }
         $i++;
-
-        # Reject messages that have either bare LF or CR. rjkaes noticed a
-        # lot of spam that is malformed in the header.
-
-        if ($_ eq ".\n" || $_ eq ".\r") {
-            $self->respond(421, 'See http://smtpd.develooper.com/barelf.html');
-            $self->disconnect;
-            return 1;
-        }
 
         unless (($max_size and $size > $max_size)) {
             s/\r\n$/\n/;
@@ -711,8 +709,6 @@ sub data_respond {
         #   way a Received: line that is already in the header.
 
                 $header->extract(\@headers);
-
-#$header->add("X-SMTPD", "qpsmtpd/".$self->version.", http://smtpd.github.io/qpsmtpd/");
 
                 $buffer = '';
 
@@ -776,7 +772,14 @@ sub data_respond {
 sub authentication_results {
     my ($self) = @_;
 
-    my @auth_list = $self->config('me');
+    # don't add an Authentication-Results if this is "none"
+    my @auth_list = $self->config('me-auth-results');
+    if (! $auth_list[0]) {
+        @auth_list = $self->config('me');
+    }
+    elsif ($auth_list[0] eq "none") {
+        return;
+    }
 
     if (!defined $self->{_auth}) {
         push @auth_list, 'auth=none';
@@ -793,8 +796,11 @@ sub authentication_results {
     }
 
     # RFC 5451: used in AUTH, DKIM, DOMAINKEYS, SENDERID, SPF
-    if ($self->connection->notes('authentication_results')) {
-        push @auth_list, $self->connection->notes('authentication_results');
+    # Connection results (iprev, SPF helo, AUTH) apply to every message;
+    # transaction results (DKIM, DMARC, SPF mailfrom) apply to this one.
+    for my $ar ($self->connection->notes('authentication_results'),
+                $self->transaction->notes('authentication_results')) {
+        push @auth_list, $ar if $ar;
     }
 
     $self->log(LOGDEBUG, "adding auth results header");
@@ -804,6 +810,10 @@ sub authentication_results {
 
 sub clean_authentication_results {
     my $self = shift;
+
+    # don't change any Authentication-Results if this is "none"
+    my ($auth_id) = $self->config('me-auth-results');
+    return if ($auth_id && ($auth_id eq "none"));
 
     # On messages received from the internet, move Authentication-Results headers
     # to Original-AR, so our downstream can trust the A-R header we insert.
@@ -860,8 +870,8 @@ sub received_line {
     my $header_str;
     my ($rc, @received) =
       $self->run_hooks("received_line", $smtp, $authheader, $sslheader);
-    if ($rc == OK) {
-        return join("\n", @received);
+    if ($rc == OK) {        
+        $header_str = join("\n", @received);
     }
     else {    # assume $rc == DECLINED
         $header_str =
@@ -925,8 +935,21 @@ sub getline {
     return $line;
 }
 
+# overridden by the transport (Qpsmtpd::TcpServer); assume connected elsewhere
+sub check_socket { 1 }
+
 sub queue {
     my ($self, $transaction) = @_;
+
+    # The message has passed every check. If the client gave up while we were
+    # working (e.g. a slow content filter), we cannot deliver the 250 and they
+    # will retry, producing a duplicate. Discard now so their retry delivers it
+    # exactly once, rather than queueing a message we can't acknowledge.
+    if (!$self->check_socket) {
+        $self->log(LOGERROR,
+            "client disconnected before queue; discarding message (sender will retry)");
+        return $self->reset_transaction;
+    }
 
     # First fire any queue_pre hooks
     $self->run_hooks("queue_pre");
