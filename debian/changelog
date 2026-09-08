@@ -1,3 +1,46 @@
+qpsmtpd (1.01+wornet1) unstable; urgency=medium
+
+  * Overhaul of the Debian packaging, which was still largely the 0.94-6
+    Debian QA state:
+    - Switch the source format to 3.0 (native).  The debian branch carries
+      the upstream tree merged in and there is no orig tarball, so quilt
+      never had anything to apply against.
+    - Drop debian/patches entirely.  forkserver_pre-connection_hook,
+      whitelist_plugin, received_line_hook and pod2man-utf8 are all part of
+      upstream 1.01 by now and no longer applied; the remaining
+      auth_ldap_bind syntax fix is carried directly in the tree, and the
+      pre-0.94 check_* compatibility wrappers are generated at build time
+      from debian/check-plugin-wrapper.in.
+    - Rewrite debian/rules using dh(1) and let it run the upstream test
+      suite; drop the dead qpsmtpd-async removals (gone since 1.00).
+    - Bump to debhelper compat 13, Standards-Version 4.7.2, add
+      Rules-Requires-Root: no and Vcs-* fields, point Homepage at GitHub and
+      take over maintainership from the Debian QA Group.
+  * Fix the dependencies:
+    - Add libnet-ip-perl.  Net::IP is used unconditionally by lib/Qpsmtpd
+      and by the relay and helo plugins, so qpsmtpd could not start without
+      it.
+    - Drop libnet-perl (gone from Debian, Net::* is in perl-modules) and
+      lsb-base (gone since bookworm); the init script did not use any LSB
+      log function, so the /lib/lsb/init-functions include was removed.
+    - Move plugin-only modules to Recommends/Suggests and add
+      libcdb-file-perl, libio-socket-ssl-perl and libtimedate-perl.
+  * Ship a working default plugin configuration.  /etc/qpsmtpd/plugins
+    referred exclusively to the deprecated check_* names, and check_spamhelo
+    in particular wrapped a 'spamhelo' plugin that no longer exists.  The
+    defaults now use the current names (earlytalker, relay, helo,
+    badmailfrom, badrcptto, loop); the check_* wrappers stay available for
+    configurations that have not been migrated yet.
+  * Use /run instead of /var/run and drop the dpkg-statoverride on the PID
+    directory, which never took effect (the directory does not exist at
+    configure time and /run is a tmpfs).
+  * Convert debian/copyright to DEP-5, refresh debian/watch for GitHub tags,
+    remove the unmodified dh_make debian/README.source template and correct
+    debian/gbp.conf, which claimed a pristine-tar branch that does not exist.
+  * Build the package in CI on Debian stable and testing.
+
+ -- Andreas Erhard <erhard@wor.net>  Tue, 08 Sep 2026 15:25:17 +0200
+
 qpsmtpd (1.01) unstable; urgency=medium
 
    * New upstream release.  1.01 has several upstream changes.

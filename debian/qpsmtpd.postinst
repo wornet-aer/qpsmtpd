@@ -6,7 +6,6 @@ RUNAS=qpsmtpd
 SPOOLDIR=/var/spool/qpsmtpd
 GREYLISTDIR=/var/lib/qpsmtpd/greylisting
 LOGDIR=/var/log/qpsmtpd
-PIDDIR=/var/run/qpsmtpd
 
 if [ -e /etc/qpsmtpd/debconf-settings ] ; then
 	. /etc/qpsmtpd/debconf-settings
@@ -132,9 +131,6 @@ setup_perms()
 	fi
 	if ( ! dpkg-statoverride --list "$LOGDIR" > /dev/null ) ; then
 		dpkg-statoverride --update --add "$RUNAS" adm 2750 "$LOGDIR"
-	fi
-	if ( ! dpkg-statoverride --list "$PIDDIR" > /dev/null ) ; then
-		dpkg-statoverride --update --add "$RUNAS" adm 2755 "$PIDDIR"
 	fi
 }
 

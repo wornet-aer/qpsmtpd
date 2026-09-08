@@ -29,6 +29,7 @@ output/.*
 \B\.svn\b
 ^\.perltidyrc$
 ^\.git/.*
+^debian/
 ^cover_db/
 \.(orig|rej)$
 packaging
