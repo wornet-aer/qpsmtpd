@@ -1,3 +1,10 @@
+qpsmtpd (1.01) unstable; urgency=medium
+
+   * New upstream release.  1.01 has several upstream changes.
+     See UPGRADING.md for more details.
+
+ -- Andreas Erhard <erhard@wor.net>  Fri, 04 Sep 2026 10:30:21 +0200
+
 qpsmtpd (1.00) unstable; urgency=medium
   
    * New upstream release.  1.00 has many upstream changes.
