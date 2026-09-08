@@ -24,16 +24,18 @@ Architecture: all
 Depends:
  adduser (>= 3.0),
  libdigest-hmac-perl,
+ libio-socket-ssl-perl,
  libipc-shareable-perl,
  libmailtools-perl,
  libnet-dns-perl,
  libnet-ip-perl,
+ perl (>= 5.32),
  ${misc:Depends},
  ${perl:Depends}
 Recommends:
  libcdb-file-perl,
+ libfile-nfslock-perl,
  libio-socket-inet6-perl,
- libio-socket-ssl-perl,
  libmail-spf-perl (>= 2.8.0),
  libnetaddr-ip-perl,
  libsocket6-perl

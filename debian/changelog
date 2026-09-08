@@ -1,3 +1,27 @@
+qpsmtpd (1.02~beta1+wornet1) unstable; urgency=medium
+
+  * Package the current upstream master, which will become 1.02.  This is a
+    pre-release for live testing; the version sorts above 1.01+wornet1 and
+    below a future 1.02.  lib/Qpsmtpd.pm still declares 1.01, so the package
+    version is deliberately ahead of it.
+  * Install CHANGELOG.md as the upstream changelog.  Upstream renamed Changes
+    to CHANGELOG.md, which broke dh_installchangelogs.
+  * Follow the reworked Makefile.PL prerequisites:
+    - IO::Socket::SSL is a hard prerequisite upstream now, so
+      libio-socket-ssl-perl moves from Recommends to Depends.  Silently
+      losing STARTTLS is worse than a missing package.
+    - Add libfile-nfslock-perl to Recommends.  Qpsmtpd::DB::File::DBM only
+      requires it for the NFS locking path, so Depends would be too strong.
+    - Add perl (>= 5.32) to match MIN_PERL_VERSION.
+  * Ship /etc/qpsmtpd/smtputf8, documented and set to 0.  SMTPUTF8 (RFC 6531)
+    is the headline feature of 1.02 and is off by default: with the extension
+    disabled, non-ASCII envelope addresses are rejected exactly as in earlier
+    releases, so the default behaviour of this package does not change.
+    Enabling it requires the queue plugin and the MTA behind it to cope with
+    non-ASCII addresses; see the comments in the file and README.Debian.
+
+ -- Andreas Erhard <erhard@wor.net>  Tue, 08 Sep 2026 22:09:04 +0200
+
 qpsmtpd (1.01+wornet1) unstable; urgency=medium
 
   * Overhaul of the Debian packaging, which was still largely the 0.94-6
