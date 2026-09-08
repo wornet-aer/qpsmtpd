@@ -202,6 +202,7 @@ sub helo_respond {
     my $conn = $self->connection;
     $conn->hello('helo');
     $conn->hello_host($args->[0]);  # store helo hostname
+    $conn->notes('smtputf8_offered', 0);    # HELO withdraws any ESMTP offer
     $self->transaction;
 
     $self->respond( 250, $self->helo_hi_msg . '; I am so happy to meet you.');
@@ -250,18 +251,35 @@ sub ehlo_respond {
         $self->{_commands}{auth} = '';
     }
 
-    $self->respond( 250, $self->helo_hi_msg,
-                    'PIPELINING',
-                    '8BITMIME',
-                    $self->ehlo_size(),
-                    @capabilities,
-                    );
+    my @extensions = ('PIPELINING', '8BITMIME', $self->ehlo_size(),
+                      $self->ehlo_smtputf8(), @capabilities);
+
+    # A plugin may offer SMTPUTF8 through the ehlo hook, so MAIL has to honour
+    # the reply the client saw rather than re-deriving it from config.
+    $conn->notes('smtputf8_offered', scalar grep { $_ eq 'SMTPUTF8' } @extensions);
+
+    $self->respond(250, $self->helo_hi_msg, @extensions);
 }
 
 sub ehlo_size {
     my $self = shift;
     return () if ! $self->config('databytes');
     return 'SIZE ' . ($self->config('databytes'))[0];
+};
+
+sub ehlo_smtputf8 {
+    my $self = shift;
+    return () if ! ($self->config('smtputf8'))[0];
+    return 'SMTPUTF8';
+};
+
+sub respond_smtputf8_required {
+    my ($self, $cmd) = @_;
+
+    # RFC 6531 3.5: a non-ASCII mailbox cannot be delivered unless the client
+    # announced SMTPUTF8 on the MAIL command. There is no downgrade to ASCII.
+    return $self->respond($cmd eq 'rcpt' ? 553 : 550,
+                    'Non-ASCII address requires SMTPUTF8 (#5.6.7)');
 };
 
 sub auth {
@@ -380,6 +398,17 @@ sub mail_pre_respond {
     return $self->respond(501, "could not parse your mail from command")
       unless $from =~ /^<.*>$/;
 
+    if (exists $param->{smtputf8}) {
+        # RFC 6531 3.4: the parameter must not carry a value
+        return $self->respond(501, 'SMTPUTF8 takes no value')
+          if defined $param->{smtputf8};
+
+        # SMTPUTF8 may only be used after it was advertised in an EHLO reply.
+        return $self->respond(555, 'SMTPUTF8 is not supported')
+          if !$self->connection->notes('smtputf8_offered');
+        $self->transaction->notes('smtputf8', 1);
+    }
+
     if ($from eq "<>" or $from =~ m/\[undefined\]/ or $from eq "<#@[]>") {
         $from = $self->address("<>");
     }
@@ -388,6 +417,9 @@ sub mail_pre_respond {
     }
     return $self->respond(501, "could not parse your mail from command")
       unless $from;
+
+    return $self->respond_smtputf8_required('mail')
+      if $from->has_utf8 && !$self->transaction->notes('smtputf8');
 
     $self->run_hooks("mail", $from, %$param);
 }
@@ -476,6 +508,9 @@ sub rcpt_pre_respond {
 
     return $self->respond(501, "could not parse recipient")
       if (!$rcpt or ($rcpt->format eq '<>'));
+
+    return $self->respond_smtputf8_required('rcpt')
+      if $rcpt->has_utf8 && !$self->transaction->notes('smtputf8');
 
     $self->run_hooks("rcpt", $rcpt, %$param);
 }
@@ -617,6 +652,23 @@ sub quit_respond {
         $self->respond(221, @$msg);
     }
     $self->disconnect();
+}
+
+# RFC 5321 4.5.3.1.4 caps a command line at 512 octets, but an AUTH exchange
+# (RFC 4954) legitimately runs past that, so use the 998 octet text line limit
+# from 4.5.3.1.6.
+our $max_command_line = 998;
+
+sub command_line_too_long {
+    my ($self, $line) = @_;
+    return 0 if !defined $line;
+    return 0 if length($line) <= $max_command_line;
+    $self->log(LOGINFO,
+               'command line of ' . length($line)
+                 . " octets exceeds $max_command_line, disconnecting");
+    $self->respond(500, 'Line too long (#5.5.2)');
+    $self->disconnect;
+    return 1;
 }
 
 sub disconnect {
@@ -847,8 +899,12 @@ sub clean_authentication_results {
 sub received_line {
     my ($self) = @_;
 
-    my $smtp = $self->connection->hello eq "ehlo" ? "ESMTP" : "SMTP";
-    my $esmtp      = substr($smtp, 0, 1) eq "E";
+    my $esmtp = $self->connection->hello eq "ehlo";
+    my $smtp  = $esmtp ? "ESMTP" : "SMTP";
+
+    # RFC 6531 4.3 registers UTF8SMTP and its S/A variants for the WITH clause
+    $smtp = "UTF8SMTP" if $esmtp && $self->transaction->notes('smtputf8');
+
     my $authheader = '';
     my $sslheader  = '';
 
