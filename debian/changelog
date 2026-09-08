@@ -37,6 +37,10 @@ qpsmtpd (1.01+wornet1) unstable; urgency=medium
   * Convert debian/copyright to DEP-5, refresh debian/watch for GitHub tags,
     remove the unmodified dh_make debian/README.source template and correct
     debian/gbp.conf, which claimed a pristine-tar branch that does not exist.
+  * Make t/qpsmtpd-db-file-dbm.t survive a build as root: -w ignores the mode
+    bits for the superuser, so validate_dir() cannot be made to fail on an
+    unwriteable directory and the assertion is now skipped for uid 0.  To be
+    forwarded upstream.
   * Build the package in CI on Debian stable and testing.
 
  -- Andreas Erhard <erhard@wor.net>  Tue, 08 Sep 2026 15:25:17 +0200
